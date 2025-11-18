@@ -1,0 +1,227 @@
+// image-map-simple.js
+(function () {
+  "use strict";
+
+  const img = document.getElementById("map-image");
+  const canvas = document.getElementById("map-overlay");
+  const tooltip = document.getElementById("map-tooltip");
+
+  if (!img || !canvas || !tooltip) return;
+
+  // Find the <map> element referenced by usemap
+  const useMapName = (img.getAttribute("usemap") || "").replace("#", "").trim();
+  if (!useMapName) return;
+
+  const map = document.querySelector('map[name="' + useMapName + '"]');
+  if (!map) return;
+
+  const ctx = canvas.getContext("2d");
+  const areas = Array.from(map.getElementsByTagName("area"));
+  if (!areas.length) return;
+
+  // Color palette: cycles through for any number of areas
+  const colors = [
+    "#f97316", // orange
+    "#3b82f6", // blue
+    "#22c55e", // green
+    "#e11d48", // pink/red
+    "#a855f7", // purple
+    "#facc15", // yellow
+  ];
+
+  // Store original coords (based on image's natural size)
+  const originalCoords = new Map();
+  areas.forEach((area) => {
+    const coords = (area.coords || "")
+      .split(",")
+      .map((n) => parseFloat(n.trim()))
+      .filter((n) => !Number.isNaN(n));
+    originalCoords.set(area, coords);
+  });
+
+  let activeArea = null;
+
+  function resizeCanvas() {
+    const rect = img.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    canvas.style.width = rect.width + "px";
+    canvas.style.height = rect.height + "px";
+  }
+
+  function resizeMap() {
+    if (!img.naturalWidth || !img.naturalHeight) return;
+
+    const wRatio = img.clientWidth / img.naturalWidth;
+    const hRatio = img.clientHeight / img.naturalHeight;
+
+    // Make <area> coords match the displayed size
+    areas.forEach((area) => {
+      const orig = originalCoords.get(area);
+      if (!orig) return;
+      const scaled = orig.map((v, i) =>
+        i % 2 === 0 ? Math.round(v * wRatio) : Math.round(v * hRatio)
+      );
+      area.coords = scaled.join(",");
+    });
+
+    resizeCanvas();
+    drawOverlay();
+  }
+
+  function hexToRgba(hex, alpha) {
+    let h = hex.replace("#", "").trim();
+    if (h.length === 3) {
+      h = h
+        .split("")
+        .map((c) => c + c)
+        .join("");
+    }
+    const num = parseInt(h, 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function drawOverlay() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!img.naturalWidth || !img.naturalHeight) return;
+
+    const wRatio = canvas.width / img.naturalWidth;
+    const hRatio = canvas.height / img.naturalHeight;
+
+    areas.forEach((area, index) => {
+      const coords = originalCoords.get(area);
+      if (!coords || !coords.length) return;
+
+      const shape = (area.shape || "rect").toLowerCase();
+      const color = colors[index % colors.length];
+      const isActive = activeArea === area;
+
+      // Scale original coords to the canvas size
+      const scaled = coords.map((v, i) =>
+        i % 2 === 0 ? v * wRatio : v * hRatio
+      );
+
+      ctx.save();
+      const fillAlpha = isActive ? 0.5 : 0.25;
+      const strokeAlpha = isActive ? 0.9 : 0.7;
+      ctx.fillStyle = hexToRgba(color, fillAlpha);
+      ctx.strokeStyle = hexToRgba(color, strokeAlpha);
+      ctx.lineWidth = isActive ? 3 : 2;
+
+      if (shape === "circle" && scaled.length >= 3) {
+        const [cx, cy, r] = scaled;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      } else if (shape === "rect" && scaled.length >= 4) {
+        const [x1, y1, x2, y2] = scaled;
+        const w = x2 - x1;
+        const h = y2 - y1;
+        ctx.beginPath();
+        ctx.rect(x1, y1, w, h);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        // polygon or arbitrary shape (poly)
+        ctx.beginPath();
+        for (let i = 0; i < scaled.length; i += 2) {
+          const x = scaled[i];
+          const y = scaled[i + 1];
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    });
+  }
+
+  function showTooltipForArea(area) {
+    const rect = img.getBoundingClientRect();
+    const coords = originalCoords.get(area);
+    if (!coords || coords.length < 2) return;
+
+    const shape = (area.shape || "rect").toLowerCase();
+    let cx, cy;
+
+    if (shape === "circle" && coords.length >= 3) {
+      cx = coords[0];
+      cy = coords[1];
+    } else if (shape === "rect" && coords.length >= 4) {
+      const [x1, y1, x2, y2] = coords;
+      cx = (x1 + x2) / 2;
+      cy = (y1 + y2) / 2;
+    } else {
+      // polygon / fallback – use first point as label anchor
+      cx = coords[0];
+      cy = coords[1];
+    }
+
+    const wRatio = canvas.width / img.naturalWidth;
+    const hRatio = canvas.height / img.naturalHeight;
+    const screenX = rect.left + cx * wRatio;
+    const screenY = rect.top + cy * hRatio;
+
+    const label = area.title || area.alt || "Region";
+    tooltip.textContent = label;
+    tooltip.style.left = screenX + "px";
+    tooltip.style.top = screenY + "px";
+    tooltip.classList.add("visible");
+  }
+
+  function hideTooltip() {
+    tooltip.classList.remove("visible");
+  }
+
+  // Attach events for all areas (extensible)
+  areas.forEach((area) => {
+    area.addEventListener("mouseenter", () => {
+      activeArea = area;
+      drawOverlay();
+      showTooltipForArea(area);
+    });
+
+    area.addEventListener("mouseleave", () => {
+      activeArea = null;
+      drawOverlay();
+      hideTooltip();
+    });
+
+    area.addEventListener("click", (e) => {
+      e.preventDefault();
+      // Toggle active state on click
+      if (activeArea === area) {
+        activeArea = null;
+        hideTooltip();
+      } else {
+        activeArea = area;
+        showTooltipForArea(area);
+      }
+      drawOverlay();
+    });
+
+    area.addEventListener("focus", () => {
+      activeArea = area;
+      drawOverlay();
+      showTooltipForArea(area);
+    });
+
+    area.addEventListener("blur", () => {
+      activeArea = null;
+      drawOverlay();
+      hideTooltip();
+    });
+  });
+
+  // Initial layout
+  if (img.complete) resizeMap();
+  img.addEventListener("load", resizeMap);
+  window.addEventListener("resize", resizeMap);
+})();
